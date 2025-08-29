@@ -29,5 +29,6 @@ header:
     - '**/Cargo.lock'
     - 'KEYS'
     - 'DISCLAIMER'
-    - '*.json'
+    - '**/*.json'
+    - '**/*.patch'
     - 'examples/tls_server-rs/ta/test-ca/**'
