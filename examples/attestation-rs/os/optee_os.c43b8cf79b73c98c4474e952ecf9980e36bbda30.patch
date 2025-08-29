@@ -1,0 +1,393 @@
+diff --git a/core/include/kernel/ts_manager.h b/core/include/kernel/ts_manager.h
+index ab1465491..48d4ec941 100644
+--- a/core/include/kernel/ts_manager.h
++++ b/core/include/kernel/ts_manager.h
+@@ -80,5 +80,6 @@ struct ts_session *ts_get_current_session_may_fail(void);
+ void ts_push_current_session(struct ts_session *sess);
+ struct ts_session *ts_pop_current_session(void);
+ struct ts_session *ts_get_calling_session(void);
++struct ts_session *ts_get_calling_calling_session(void);
+ 
+ #endif /*__KERNEL_TS_MANAGER_H*/
+diff --git a/core/kernel/ts_manager.c b/core/kernel/ts_manager.c
+index b27946343..ef8aa845d 100644
+--- a/core/kernel/ts_manager.c
++++ b/core/kernel/ts_manager.c
+@@ -60,6 +60,14 @@ struct ts_session *ts_get_calling_session(void)
+ 	return TAILQ_NEXT(ts_get_current_session(), link_tsd);
+ }
+ 
++struct ts_session *ts_get_calling_calling_session(void)
++{
++	struct ts_session *calling = TAILQ_NEXT(ts_get_current_session(), link_tsd);
++	if (!calling)
++		return NULL;
++	return TAILQ_NEXT(calling, link_tsd);
++}
++
+ struct ts_session *ts_get_current_session_may_fail(void)
+ {
+ 	return TAILQ_FIRST(&thread_get_tsd()->sess_stack);
+diff --git a/core/pta/attestation.c b/core/pta/attestation.c
+index d8a410758..9a797a318 100644
+--- a/core/pta/attestation.c
++++ b/core/pta/attestation.c
+@@ -760,6 +760,248 @@ out:
+ 	return res;
+ }
+ 
++static TEE_Result check_caller(TEE_UUID *uuid) {
++	struct ts_session *s = ts_get_calling_session();
++	if (!s) {
++		struct ts_session *ts = ts_get_current_session();
++		struct tee_ta_session *ta_session = to_ta_session(ts);
++
++		EMSG("Called from Normal World, client ID %pUl",
++		     &ta_session->clnt_id);
++		return TEE_ERROR_ACCESS_DENIED;
++	}
++
++	if (!is_user_ta_ctx(s->ctx)) {
++		EMSG("Not called from a user TA, is_user_ta_ctx failed");
++		return TEE_ERROR_ACCESS_DENIED;
++	}
++
++	// print caller TA uuid
++	IMSG("Current caller TA uuid: %pUl", &s->ctx->uuid);
++
++	// check caller
++	if (memcmp(&s->ctx->uuid, uuid, sizeof(TEE_UUID)) != 0) {
++		EMSG("Not called from: %pUl", uuid);
++		return TEE_ERROR_ACCESS_DENIED;
++	}
++	IMSG("Called from: %pUl", uuid);
++	return TEE_SUCCESS;
++}
++
++static TEE_Result get_os_measurement(uint8_t *tee_memory_hash) {
++	TEE_Result res = TEE_ERROR_GENERIC;
++	void *ctx = NULL;
++
++	/////////////////////////////////////////////
++	// hash tee memory: copy from original command
++	res = crypto_hash_alloc_ctx(&ctx, TEE_ALG_SHA256);
++	if (res)
++		return res;
++	res = crypto_hash_init(ctx);
++	if (res)
++		goto out;
++	res = crypto_hash_update(ctx, __text_start,
++				 __text_data_start - __text_start);
++	if (res)
++		goto out;
++	res = crypto_hash_update(ctx, __text_data_end,
++				 __text_end - __text_data_end);
++	if (IS_ENABLED(CFG_WITH_PAGER)) {
++		res = crypto_hash_update(ctx, __text_init_start,
++					 __text_init_end - __text_init_start);
++		if (res)
++			goto out;
++		res = crypto_hash_update(ctx, __text_pageable_start,
++					 __text_pageable_end -
++						__text_pageable_start);
++		if (res)
++			goto out;
++	}
++	if (res)
++		goto out;
++	res = crypto_hash_update(ctx, __rodata_start,
++				 __rodata_end - __rodata_start);
++	if (res)
++		goto out;
++	if (IS_ENABLED(CFG_WITH_PAGER)) {
++		res = crypto_hash_update(ctx, __rodata_init_start,
++					 __rodata_init_end -
++						__rodata_init_start);
++		if (res)
++			goto out;
++		res = crypto_hash_update(ctx, __rodata_pageable_start,
++					 __rodata_pageable_end -
++						__rodata_pageable_start);
++		if (res)
++			goto out;
++	}
++	res = crypto_hash_final(ctx, tee_memory_hash, TEE_SHA256_HASH_SIZE);
++	if (res)
++		goto out;
++	//////////////////////////////////////
++
++out:
++	crypto_hash_free_ctx(ctx);
++	return res;
++}
++
++static TEE_Result cmd_get_report(uint32_t param_types,
++				 TEE_Param params[TEE_NUM_PARAMS])
++{
++	uint8_t *target_uuid_array = params[0].memref.buffer;
++	size_t target_uuid_sz = params[0].memref.size;
++	struct report_body *report = params[1].memref.buffer;
++	size_t report_sz = params[1].memref.size;
++	TEE_Result res = TEE_SUCCESS;
++
++	TEE_UUID quoting_ta_uuid = QUOTING_TA_UUID;
++	// parse big endian uuid to TEE_UUID structure
++	TEE_UUID target_uuid = {0};
++	tee_uuid_from_octets(&target_uuid, target_uuid_array);
++
++	if (param_types != TEE_PARAM_TYPES(TEE_PARAM_TYPE_MEMREF_INPUT,
++		               TEE_PARAM_TYPE_MEMREF_OUTPUT,
++					   TEE_PARAM_TYPE_NONE,
++					   TEE_PARAM_TYPE_NONE))
++		return TEE_ERROR_BAD_PARAMETERS;
++
++	if (target_uuid_sz != sizeof(target_uuid)) {
++		EMSG("Target UUID size mismatch, input: %zu, expected: %zu", target_uuid_sz, sizeof(target_uuid));
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	if (!report || report_sz < sizeof(*report)) {
++		EMSG("Report size mismatch, input: %zu, expected: %zu", report_sz, sizeof(*report));
++		return TEE_ERROR_BAD_PARAMETERS;
++	}
++
++	res = check_caller(&quoting_ta_uuid);
++	if (res) {
++		EMSG("Check caller TA failed, res: %x", res);
++		return res;
++	}
++
++	/* Copy target UUID array instead of target_uuid, because the target_uuid_array is in big endian format */
++	memcpy(&report->ta_id, target_uuid_array, sizeof(TEE_UUID));
++
++	/* Get measurements based on target UUID */
++	if (memcmp(&target_uuid, &quoting_ta_uuid, sizeof(TEE_UUID)) == 0) {
++		/* Case 1: Target is Quoting TA itself */
++		struct ts_session *quoting_ta_session = ts_get_calling_session();
++		struct user_mode_ctx *quoting_ta_uctx = to_user_mode_ctx(quoting_ta_session->ctx);
++
++		if (!quoting_ta_uctx) {
++			EMSG("Failed to get quoting TA context");
++			return TEE_ERROR_BAD_STATE;
++		}
++
++		/* Get Quoting TA binary measurement */
++		res = hash_binary(&quoting_ta_uuid, report->mr_ta_binary);
++		if (res) {
++			EMSG("Failed to get quoting TA binary measurement");
++			return res;
++		}
++
++		/* Get Quoting TA memory measurement
++		   hash_regions() read the virtual address so we need to switch to quoting TA context.
++		
++		   OS maintains the session queue:
++		   App TA - Quoting TA - Current PTA (Queue Head)
++		   Pop current session means switch to quoting TA context*/
++		struct ts_session *s = ts_pop_current_session();
++		res = hash_regions(&quoting_ta_uctx->vm_info, report->mr_ta_memory);
++		/* Push back the session*/
++		ts_push_current_session(s);
++		if (res) {
++			EMSG("Failed to get quoting TA memory measurement");
++			return res;
++		}
++	} else {
++		/* Case 2: Target is App TA
++		   OS maintains the session queue:
++		   App TA - Quoting TA - Current PTA (Queue Head)
++		   So the target TA session is the calling session of Quoting TA,
++		   which is the calling calling session of Current PTA
++		*/
++		struct ts_session *target_ta_session = ts_get_calling_calling_session();
++		
++		if (!target_ta_session) {
++			EMSG("Failed to get target TA session");
++			return TEE_ERROR_BAD_STATE;
++		}
++
++		/* Verify target TA UUID matches input UUID */
++		if (memcmp(&target_ta_session->ctx->uuid, &target_uuid, sizeof(TEE_UUID)) != 0) {
++			EMSG("Target TA UUID mismatch, input: %pUl, session ctx: %pUl", &target_uuid, &target_ta_session->ctx->uuid);
++			return TEE_ERROR_BAD_PARAMETERS;
++		}
++
++		struct user_mode_ctx *target_ta_uctx = to_user_mode_ctx(target_ta_session->ctx);
++		if (!target_ta_uctx) {
++			EMSG("Failed to get target TA context");
++			return TEE_ERROR_BAD_STATE;
++		}
++
++		/* Get target TA binary measurement */
++		res = hash_binary(&target_uuid, report->mr_ta_binary);
++		if (res) {
++			EMSG("Failed to get target TA binary measurement");
++			return res;
++		}
++
++		/* Get target TA memory measurement
++		   hash_regions() read the virtual address so we need to switch to target TA context.
++
++		   OS maintains the session queue:
++		   App TA - Quoting TA - Current PTA (Queue Head)
++		   So we need to pop 2 times to switch to App TA context
++		*/
++		struct ts_session *s = ts_pop_current_session();
++		struct ts_session *s2 = ts_pop_current_session();
++		
++		// Make a local copy of the hash buffer
++		uint8_t target_ta_mem_hash[TEE_SHA256_HASH_SIZE];
++		
++		res = hash_regions(&target_ta_uctx->vm_info, target_ta_mem_hash);
++		
++		// Debug: print the hash result
++		DMSG("Target TA memory hash result:");
++		DHEXDUMP(target_ta_mem_hash, TEE_SHA256_HASH_SIZE);
++		
++		// Push back sessions in reverse order
++		ts_push_current_session(s2);  // Push back Quoting TA first
++		ts_push_current_session(s);   // Then push back PTA
++		
++		if (res) {
++			EMSG("Failed to get target TA memory measurement");
++			return res;
++		}
++
++		// Copy the hash to the report after session management
++		memcpy(report->mr_ta_memory, target_ta_mem_hash, TEE_SHA256_HASH_SIZE);
++		
++		// Debug: verify hash after copying
++		DMSG("Target TA memory hash after copying:");
++		DHEXDUMP(report->mr_ta_memory, TEE_SHA256_HASH_SIZE);
++	}
++
++	/* Get OS measurement */
++	res = get_os_measurement(report->mr_os_memory);
++	if (res) {
++		EMSG("Failed to get OS measurement");
++		return res;
++	}
++
++	/* Set output size */
++	params[1].memref.size = sizeof(*report);
++
++	// debug: print the report
++	DMSG("Report:");
++	DHEXDUMP(report, sizeof(*report));
++
++	return TEE_SUCCESS;
++}
++
+ static TEE_Result invoke_command(void *sess_ctx __unused, uint32_t cmd_id,
+ 				 uint32_t param_types,
+ 				 TEE_Param params[TEE_NUM_PARAMS])
+@@ -786,6 +1028,9 @@ static TEE_Result invoke_command(void *sess_ctx __unused, uint32_t cmd_id,
+ 	case PTA_ATTESTATION_HASH_TEE_MEMORY:
+ 		res = cmd_hash_tee_memory(param_types, eparams);
+ 		break;
++	case PTA_ATTESTATION_GET_REPORT:
++		res = cmd_get_report(param_types, eparams);
++		break;
+ 	default:
+ 		break;
+ 	}
+diff --git a/lib/libutee/include/pta_attestation.h b/lib/libutee/include/pta_attestation.h
+index 76a1d3a6b..93d022bde 100644
+--- a/lib/libutee/include/pta_attestation.h
++++ b/lib/libutee/include/pta_attestation.h
+@@ -99,4 +99,48 @@
+  */
+ #define PTA_ATTESTATION_HASH_TEE_MEMORY 0x3
+ 
++
++#include <stdint.h>
++#include <tee_api_types.h>
++
++/* Report Body structure */
++struct report_body {
++    /* TA UUID */
++    TEE_UUID ta_id;
++    /* Measurement of TA binary */
++    uint8_t mr_ta_binary[32];
++    /* Measurement of TA memory */
++    uint8_t mr_ta_memory[32];
++    /* Measurement of OS memory */
++    uint8_t mr_os_memory[32];
++};
++
++/* 
++ * We hardcode the quoting TA UUID here
++ * In our design, the GET_REPORT command can only be called by the Quoting TA 
++ */
++#define QUOTING_TA_UUID { 0x8479d039, 0x9bbc, 0x439c, \
++		{ 0x98, 0x71, 0xd5, 0x10, 0x01, 0x32, 0x4c, 0x09 } }
++
++/*
++ * Generate an attestation report for a target TA. The report includes measurements
++ * of the TA binary, TA memory state, and OS memory state. This command can only
++ * be called by the Quoting TA.
++ *
++ * [in]     memref[0]        UUID of the target TA to generate report for
++ * [out]    memref[1]        Report body structure containing:
++ *                           - Target TA UUID (16 bytes)
++ *                           - TA binary measurement (SHA256, 32 bytes)
++ *                           - TA memory measurement (SHA256, 32 bytes)
++ *                           - OS memory measurement (SHA256, 32 bytes)
++ *
++ * Return codes:
++ * TEE_SUCCESS
++ * TEE_ERROR_ACCESS_DENIED - Caller is not the Quoting TA
++ * TEE_ERROR_BAD_PARAMETERS - Incorrect input param or buffer size
++ * TEE_ERROR_BAD_STATE - Failed to get required TA context
++ * TEE_ERROR_SECURITY - Target TA UUID doesn't match session UUID
++ */
++#define PTA_ATTESTATION_GET_REPORT 0x4
++
+ #endif /* __PTA_ATTESTATION_H */
+diff --git a/mk/config.mk b/mk/config.mk
+index 30bf37159..44c5edb98 100644
+--- a/mk/config.mk
++++ b/mk/config.mk
+@@ -73,13 +73,13 @@ CFG_TEE_CORE_DEBUG ?= y
+ # 2: error + info
+ # 3: error + info + debug
+ # 4: error + info + debug + flow
+-CFG_TEE_CORE_LOG_LEVEL ?= 2
++CFG_TEE_CORE_LOG_LEVEL ?= 4
+ 
+ # TA log level
+ # If user-mode library libutils.a is built with CFG_TEE_TA_LOG_LEVEL=0,
+ # TA tracing is disabled regardless of the value of CFG_TEE_TA_LOG_LEVEL
+ # when the TA is built.
+-CFG_TEE_TA_LOG_LEVEL ?= 1
++CFG_TEE_TA_LOG_LEVEL ?= 4
+ 
+ # TA enablement
+ # When defined to "y", TA traces are output according to
+@@ -303,7 +303,7 @@ CFG_BUILD_IN_TREE_TA ?= y
+ # When this flag is enabled, the ELF loader will introduce a random offset
+ # when mapping the application in user space. ASLR makes the exploitation of
+ # memory corruption vulnerabilities more difficult.
+-CFG_TA_ASLR ?= y
++CFG_TA_ASLR ?= n
+ 
+ # How much ASLR may shift the base address (in pages). The base address is
+ # randomly shifted by an integer number of pages comprised between these two
+@@ -317,7 +317,7 @@ CFG_TA_ASLR_MAX_OFFSET_PAGES ?= 128
+ # When this flag is enabled, the early init code will introduce a random
+ # offset when mapping TEE Core. ASLR makes the exploitation of memory
+ # corruption vulnerabilities more difficult.
+-CFG_CORE_ASLR ?= y
++CFG_CORE_ASLR ?= n
+ 
+ # Stack Protection for TEE Core
+ # This flag enables the compiler stack protection mechanisms -fstack-protector.
+@@ -677,7 +677,7 @@ CFG_DEVICE_ENUM_PTA ?= y
+ 
+ # The attestation pseudo TA provides an interface to request measurements of
+ # a TA or the TEE binary.
+-CFG_ATTESTATION_PTA ?= n
++CFG_ATTESTATION_PTA ?= y
+ $(eval $(call cfg-depends-all,CFG_ATTESTATION_PTA,_CFG_WITH_SECURE_STORAGE))
+ 
+ # RSA key size (in bits) for the attestation PTA. Must be at least 528 given
