@@ -28,6 +28,10 @@ edition = "2018"
 proto = { path = "../proto" }
 optee-utee-sys = { path = "../../../optee-utee/optee-utee-sys" }
 optee-utee = { path = "../../../optee-utee" }
+secure_db = { path = "../../../crates/secure_db" }
+
+anyhow = "1.0"
+serde = { version = "1.0", features = ["derive"] }
 
 [build-dependencies]
 proto = { path = "../proto" }

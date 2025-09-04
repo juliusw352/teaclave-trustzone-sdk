@@ -20,7 +20,7 @@
 use optee_teec::{Context, Operation, ParamNone, ParamTmpRef, Session, Uuid};
 use proto::{Command, UUID};
 use std::io::{ErrorKind, Read, Write};
-use std::net::{TcpListener, TcpStream};
+//use std::net::{TcpListener, TcpStream};
 use std::thread;
 
 /*
@@ -41,7 +41,9 @@ fn random(session: &mut Session) -> optee_teec::Result<u64> {
 }
 */
 
-fn incoming_key_compute(session: &mut Session, incoming_num: u64) -> optee_teec::Result<([0u8; 8])> {
+//fn incoming_key_compute(session: &mut Session, incoming_num: u64) -> optee_teec::Result<([0u8; 8])> {
+fn incoming_key_compute(session: &mut Session) -> optee_teec::Result<u64> {
+    let incoming_num: u64 = 12345;
     let incoming_buf = incoming_num.to_ne_bytes();
     let mut computed_buf = [0u8; 8];
 
@@ -51,17 +53,17 @@ fn incoming_key_compute(session: &mut Session, incoming_num: u64) -> optee_teec:
 
     println!("Invoking TA to compute incoming key...");
     session.invoke_command(Command::IncomingKey as u32, &mut operation)?;
-    println!("Invoking done!");
 
-    let computed_key: u64 = u64::from_ne_bytes(computed_buf);
+    let computed_key: u64 = u64::from_ne_bytes(incoming_buf);
 
     println!(
         "TA-computed key from incoming key {}: {}",
         incoming_num, computed_key
     );
-    Ok(computed_buf)
+    Ok(computed_key)
 }
 
+/*
 fn handle_client(_ta_session: &mut Session, _session_id: u32, mut stream: TcpStream) -> Option<()> {
     let mut buffer = [0; 8];
 
@@ -96,6 +98,7 @@ fn handle_client(_ta_session: &mut Session, _session_id: u32, mut stream: TcpStr
         return None;
     }
 }
+*/
 
 /*fn handle_client(mut stream: TcpStream) -> Option<[u8; 8]> {
     let mut buffer = [0; 8];
@@ -137,24 +140,23 @@ fn main() -> optee_teec::Result<()> {
     println!("Success");
     Ok(())
 }
+*/
 
 fn main() {
     let mut ctx = Context::new().expect("Failed to create TEE context");
     let uuid = Uuid::parse_str(UUID).unwrap();
     let mut session = ctx.open_session(uuid).expect("Failed to open TEE session");
 
-    let mut stream = TcpStream::connect("127.0.0.1:9090").expect("Failed to connect");
+    let public_key = incoming_key_compute(&mut session).expect("Failed to generate random key");
 
-    let public_key = random(&mut session).expect("Failed to generate random key");
-
-    println!("Sending public key to server: {}", public_key);
-    stream
-        .write_all(&public_key.to_ne_bytes())
-        .expect("Failed to send public key");
+    //println!("Sending public key to server: {}", public_key);
+    /*stream
+    .write_all(&public_key.to_ne_bytes())
+    .expect("Failed to send public key");*/
     println!("Public key sent");
 }
-*/
 
+/*
 fn main() -> optee_teec::Result<()> {
     let mut ctx = Context::new()?;
     let uuid = Uuid::parse_str(UUID).unwrap();
@@ -172,3 +174,4 @@ fn main() -> optee_teec::Result<()> {
     println!("Success");
     Ok(())
 }
+*/
