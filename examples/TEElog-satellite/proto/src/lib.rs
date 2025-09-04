@@ -21,13 +21,12 @@ use num_enum::{FromPrimitive, IntoPrimitive};
 #[derive(FromPrimitive, IntoPrimitive)]
 #[repr(u32)]
 pub enum Command {
-    //RandomGenerator,
-    IncomingKey,
+    RandomGenerator,
     #[default]
     Unknown,
 }
 
 // If Uuid::parse_str() returns an InvalidLength error, there may be an extra
-// newline in your uuid.txt file. You can remove it by running
+// newline in your uuid.txt file. You can remove it by running 
 // `truncate -s 36 uuid.txt`.
 pub const UUID: &str = &include_str!("../../uuid.txt");

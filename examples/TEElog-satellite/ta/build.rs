@@ -15,19 +15,9 @@
 // specific language governing permissions and limitations
 // under the License.
 
-#![no_std]
-use num_enum::{FromPrimitive, IntoPrimitive};
+use optee_utee_build::{Error, RustEdition, TaConfig};
 
-#[derive(FromPrimitive, IntoPrimitive)]
-#[repr(u32)]
-pub enum Command {
-    //RandomGenerator,
-    IncomingKey,
-    #[default]
-    Unknown,
+fn main() -> Result<(), Error> {
+    let ta_config = TaConfig::new_default_with_cargo_env(proto::UUID)?;
+    optee_utee_build::build(RustEdition::Before2024, ta_config)
 }
-
-// If Uuid::parse_str() returns an InvalidLength error, there may be an extra
-// newline in your uuid.txt file. You can remove it by running
-// `truncate -s 36 uuid.txt`.
-pub const UUID: &str = &include_str!("../../uuid.txt");
