@@ -69,52 +69,6 @@ fn destroy() {
     trace_println!("[+] TA destroy");
 }
 
-/*
-pub fn random_number_generate(params: &mut Parameters) -> anyhow::Result<()> {
-    let p: u64 = 345466091;
-    let base: u64 = 124717;
-
-    let mut par = unsafe { params.0.as_memref().unwrap() };
-    let mut buf = vec![0; par.buffer().len()];
-    buf.copy_from_slice(par.buffer());
-
-    Random::generate(buf.as_mut() as _);
-    let secret_key: u64 = u64::from_ne_bytes(buf[0..8].try_into().unwrap()) % (p - 1);
-    trace_println!("[+] TA generate secret key: {}", secret_key);
-
-    let public_key: u64 = power_mod(base, secret_key, p);
-    trace_println!("[+] TA generate public key: {}", public_key);
-    par.buffer()
-        .copy_from_slice(u64::to_ne_bytes(public_key).as_ref());
-
-    let public_key_db_entry = DbDataType {
-        id: "public_key".to_string(),
-        data: public_key,
-    };
-    let secret_key_db_entry = DbDataType {
-        id: "secret_key".to_string(),
-        data: secret_key,
-    };
-
-    let db_client = SecureStorageClient::open("secure_db")?;
-    db_client.put(&secret_key_db_entry)?;
-    db_client.put(&public_key_db_entry)?;
-    trace_println!("[+] TA store keys");
-
-    let loaded_secret_key: DbDataType = db_client.get::<DbDataType>(&"secret_key".to_string())?;
-    let loaded_public_key: DbDataType = db_client.get::<DbDataType>(&"public_key".to_string())?;
-    trace_println!(
-        "[+] TA loaded secret key from secure db: {:?}",
-        loaded_secret_key
-    );
-    trace_println!(
-        "[+] TA loaded public key from secure db: {:?}",
-        loaded_public_key
-    );
-
-    Ok(())
-}*/
-
 pub fn incoming_key_compute(params: &mut Parameters) -> anyhow::Result<()> {
     // Using small prime numbers for simplicity and due to standard type restrictions in Rust;
     // in real applications, use large primes
@@ -161,6 +115,10 @@ pub fn incoming_key_compute(params: &mut Parameters) -> anyhow::Result<()> {
         data: shared_key,
     };
     db_client.put(&shared_key_db_entry)?;
+    let hash = DbDataType {
+        id: "hash".to_string(),
+        data: shared_key,
+    }
 
     trace_println!("[+] TA computed shared key: {}", shared_key);
     db_client.put(&DbDataType {
