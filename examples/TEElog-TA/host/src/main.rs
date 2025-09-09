@@ -23,6 +23,8 @@ use std::io::{ErrorKind, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 
+pub mod generator;
+
 fn incoming_key_compute(session: &mut Session, incoming_buf: [u8; 8]) -> optee_teec::Result<u64> {
     let mut computed_buf = [0u8; 8];
 
