@@ -115,10 +115,6 @@ pub fn incoming_key_compute(params: &mut Parameters) -> anyhow::Result<()> {
         data: shared_key,
     };
     db_client.put(&shared_key_db_entry)?;
-    let hash = DbDataType {
-        id: "hash".to_string(),
-        data: shared_key,
-    }
 
     trace_println!("[+] TA computed shared key: {}", shared_key);
     db_client.put(&DbDataType {

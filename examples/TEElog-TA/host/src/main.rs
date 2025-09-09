@@ -15,7 +15,6 @@
 // specific language governing permissions and limitations
 // under the License.
 
-
 #![allow(unused_imports)] // Imports behave a bit weird sometimes with Teaclave
 
 use optee_teec::{Context, Operation, ParamNone, ParamTmpRef, Session, Uuid};
